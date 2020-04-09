@@ -1,108 +1,85 @@
-#!/usr/bin/python
-
-import string
-import requests
+import os
+import google_auth_oauthlib.flow
+import googleapiclient.discovery
+import googleapiclient.errors
+import pandas as pd
 import json
-import time
-import dataset
-import numpy as np
-from itertools import izip_longest
-import multiprocessing as mp
-import logging
-import traceback
-from ytlibrary import *
+from pandas.io.json import json_normalize  
 
-def search_list_by_keyword(service, **kwargs):
-  kwargs = remove_empty_kwargs(**kwargs) 
-  results = service.search().list(**kwargs).execute()
- 
-  return results
+CLIENT_SECRETS_FILE = "client_secrets.json"
+RANKINGS_DIRECTORY = "./Category Rankings"
 
+scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
 
-def init_samples():
-  chars = []
-  chars.extend(range(0,10))
-  chars.extend(['_', '-'])
-  chars.extend(list(string.ascii_lowercase))
+def setupAPI():
+    # Disable OAuthlib's HTTPS verification when running locally.
+    # *DO NOT* leave this option enabled in production.
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-  sample_list = []
-  for i in range(0, 1000000):
-    sample_list.append({ 'seed': ''.join([str(x) for x in np.random.choice(chars, 5)]),
-                         'resultsCount': 0,
-                         'completedStatus': 0})
+    api_service_name = "youtube"
+    api_version = "v3"
+    
+    ## Get credentials and create an API client
+    flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE, scopes)
+    credentials = flow.run_console()
+    youtube = googleapiclient.discovery.build(
+        api_service_name, api_version, credentials=credentials)
 
-  return sample_list
+    return youtube
 
+def getCategories(youtubeAPI):
+    request = youtube.videoCategories().list(
+        part="snippet",
+        regionCode="US"
+    )
+    response = request.execute()
+    return response
 
-def grouper(n, iterable, fillvalue = None):
-  args = [iter(iterable)] * n
-  return izip_longest(fillvalue = fillvalue, *args)
+def loadCategories():
+    file = open("ytCategories.json")
+    ytCategories = processResponse(file)
 
-
-def fill_samples(sample_list):
-  result_sample_list = []
-  result_sample_video_list = []
-
-  for sample in sample_list:
+def getMostPopularVideos(youtubeAPI, youtubeCategoryID):
     try:
-      if sample is None:
-        continue
-
-      watch = '"watch?v=%s"' % sample['seed']
-      result_sample = {'autoId': sample['autoId']}
-
-      jrtext = search_list_by_keyword(service, part='snippet', maxResults=50, q=watch, type='video')
-      time.sleep(1)
- 
-      if jrtext is not None:
-
-        if 'pageInfo' in jrtext.keys():
-
-          count = jrtext['pageInfo']['totalResults']
-          result_sample['resultsCount'] = count
-          print 'Count' + str(count)
-
-          if count <= 50:
-            result_sample['completedStatus'] = 2
-
-            for item in jrtext['items']:
-              result_sample_video_list.append({'id': item['id']['videoId'], 'sampleId': sample['autoId']})
-          
-          else:
-            result_sample['completedStatus'] = 1
-
-          result_sample_list.append(result_sample)
-
+      request = youtube.videos().list(
+                  part="snippet,contentDetails,statistics",
+                  chart="mostPopular",
+                  maxResults=50,
+                  regionCode="US",
+                  videoCategoryId=str(youtubeCategoryID)
+              )
+      response = request.execute()
     except:
-      print('Caught exception trying to sample %s:' % sample['seed'])
-      traceback.print_exc() 
+      print("Request failed")
+    return response
+
+def getAllMostPopularVideos(youtubeAPI, youtubeCategories):
+    for categoryID in youtubeCategories["id"]:
+      getMostPopularVideos(youtubeAPI, categoryID)
+
+def loadMostPopularVideos():
+    mpVideos = list()
+    for file in os.listdir(RANKINGS_DIRECTORY):
+      if file.endswith(".json"):
+          jsonFile = open(RANKINGS_DIRECTORY + "/" + file)
+          indexName = ''.join(e for e in file.replace(".json", "") if e.isalnum())
+          mpVideos.append(processResponse(jsonFile))
+    return mpVideos
 
 
-  return {'result_sample_list': result_sample_list, 'result_sample_video_list': result_sample_video_list}
+def processResponse(jsonReponse):
+    data = json.load(jsonReponse)
+    items = pd.DataFrame(data["items"])
+    dfResponse = json_normalize(items["snippet"])
+    dfResponse["id"] = items["id"]
+    return dfResponse
 
-
-if __name__ == '__main__':
-  db = dataset.connect('sqlite:///youtube.db')
-
-  result = init_samples()
-  db['sample'].insert_many(result)
-
-  samples = db['sample'].find(completedStatus = 0, _limit = 9000)
-
-  sample_chunks = grouper(10000, samples)
-  sample_chunks_list = []
-
-  for sc in sample_chunks:
-    sample_chunks_list.append(sc)
-
-  pool = mp.Pool(processes=3)
-
-  res = pool.map(fill_samples, sample_chunks_list)
-
-  for r in res:
-    if (r is not None and (len(r) != 0)):
-
-      db['sampleVideos'].insert_many(r['result_sample_video_list'])
-
-      for sample in r['result_sample_list']:
-        db['sample'].update(sample, ['autoId'])
+def main():
+    youtubeAPI = setupAPI()
+    
+    mpVideos = loadMostPopularVideos()
+    print(mpVideos)
+    
+if __name__ == "__main__":
+    main()
