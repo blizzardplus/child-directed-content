@@ -13,3 +13,7 @@ This folder contains scripts to gather a sample of YouTube videos. For more deta
 * `youtube.db`: The sample of videos used in this analysis; stored in a SQLite3 database
 
 These files use the [YouTube Data API](https://developers.google.com/youtube/v3/) library underneath. The library needs to be set up before the files can be run. `ytlibrary.py` is YouTube's Python wrapper around their API.
+
+For YouTube sampler, install the following `pip` packages:
+
+  `pip install --user --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib youtube-dl pafy`
